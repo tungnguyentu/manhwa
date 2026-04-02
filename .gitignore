@@ -1,0 +1,14 @@
+.env
+data/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+dist/
+*.egg-info/
+.DS_Store
+
+.playwright-mcp/
+*.ocr_tmp*.jpg

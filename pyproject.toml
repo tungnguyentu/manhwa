@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "toon"
+version = "0.1.0"
+description = "Webtoon character-voice-aware translation system"
+requires-python = ">=3.11"
+dependencies = [
+    "zai-sdk",
+    "typer>=0.12",
+    "rich>=13",
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "pydantic>=2.7",
+    "pydantic-settings>=2",
+    "Pillow>=10",
+]
+
+[project.scripts]
+toon = "toon.cli:app"
+toon-ui = "toon.webui:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["toon"]
