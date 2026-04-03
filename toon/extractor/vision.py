@@ -81,7 +81,13 @@ def _ocr_image(image_path: Path, langs: tuple[str, ...] = ("en", "vi")) -> list[
                     xs = [pt[0] for pt in adjusted_bbox]
                     ys = [pt[1] for pt in adjusted_bbox]
                     cx, cy = sum(xs) / 4, sum(ys) / 4
-                    results_all.append({"text": text.strip(), "confidence": round(conf, 2), "cx": cx, "cy": cy})
+                    x0, y0 = int(min(xs)), int(min(ys))
+                    x1, y1 = int(max(xs)), int(max(ys))
+                    results_all.append({
+                        "text": text.strip(), "confidence": round(conf, 2),
+                        "cx": cx, "cy": cy,
+                        "x0": x0, "y0": y0, "x1": x1, "y1": y1,
+                    })
         finally:
             tmp.unlink(missing_ok=True)
         y += chunk_h - overlap
@@ -253,7 +259,12 @@ async def extract_chapter(
             )
             total_dialogues += 1
 
-    # Step 4: Save human-readable text file for inspection
+    # Step 4: Save OCR bbox data for reader (text replacement)
+    import json as _json
+    ocr_data = {i: all_ocr[i] for i in range(len(all_ocr))}
+    (images_dir / "_ocr_boxes.json").write_text(_json.dumps(ocr_data), encoding="utf-8")
+
+    # Step 5: Save human-readable text file for inspection
     txt_path = images_dir / "_dialogues.txt"
     lines = []
     for extraction in all_extractions:

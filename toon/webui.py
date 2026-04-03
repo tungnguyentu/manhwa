@@ -331,6 +331,9 @@ def do_read(slug: str, chapter_num: str) -> str:
             return "Chapter not found."
 
         rows = db_module.get_translations_for_chapter(ch["id"])
+        translated_count = sum(1 for r in rows if r.get("translated_text"))
+        dialogue_count = len(rows)
+
         # Group by panel
         panels: dict[int, list[dict]] = {}
         for r in rows:
@@ -338,10 +341,122 @@ def do_read(slug: str, chapter_num: str) -> str:
 
         images_dir = settings.data_dir / "images" / slug / f"{int(chapter_num):03d}"
 
-        html_parts = [f"<h2>{slug} — Chapter {chapter_num}</h2>"]
+        status = f"({dialogue_count} dialogues, {translated_count} translated)"
+        if dialogue_count == 0:
+            status += " — No text extracted yet. Run Force re-extract in the Translate tab first."
+        elif translated_count == 0:
+            status += " — Dialogues found but not translated yet. Run Translate."
+
+        import base64, json as _json, textwrap as _textwrap, unicodedata as _ud
+        from PIL import Image as _Image, ImageDraw as _ImageDraw, ImageFont as _ImageFont
+        import io
+
+        # Be Vietnam Pro — best Vietnamese diacritic support
+        _FONT_DIR = settings.data_dir.parent / "fonts"
+        _FONT_REGULAR = str(_FONT_DIR / "BeVietnamPro-Regular.ttf")
+        _FONT_BOLD    = str(_FONT_DIR / "BeVietnamPro-Bold.ttf")
+        _FONT_FALLBACK = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
+
+        def _load_font(size: int, bold: bool = False) -> "_ImageFont.FreeTypeFont":
+            for path in ([_FONT_BOLD, _FONT_REGULAR] if bold else [_FONT_REGULAR, _FONT_FALLBACK]):
+                try:
+                    return _ImageFont.truetype(path, size)
+                except Exception:
+                    continue
+            return _ImageFont.load_default()
+
+        def _clamp(v, lo, hi):
+            return max(lo, min(hi, v))
+
+        def _sample_color(image, x, y):
+            try:
+                return image.getpixel((_clamp(int(x), 0, image.width - 1),
+                                       _clamp(int(y), 0, image.height - 1)))
+            except Exception:
+                return (255, 255, 255)
+
+        def _fit_text(draw, text: str, box_w: int, box_h: int) -> tuple:
+            """Return (font, wrapped_text, font_size) fitting inside box_w × box_h."""
+            text = _ud.normalize("NFC", text)
+            for size in range(min(40, box_h), 7, -2):
+                font = _load_font(size)
+                avg_cw = max(1, draw.textlength("abcdefghij", font=font) / 10)
+                chars = max(1, int(box_w / avg_cw))
+                wrapped = _textwrap.fill(text, chars)
+                bb = draw.textbbox((0, 0), wrapped, font=font, spacing=2, language="vi")
+                if (bb[2] - bb[0]) <= box_w and (bb[3] - bb[1]) <= box_h:
+                    return font, wrapped, size
+            font = _load_font(8)
+            return font, text, 8
+
+        def _replace_bubble_text(img, ocr_boxes, translations):
+            """Erase original text and draw Vietnamese translations in each bubble."""
+            draw = _ImageDraw.Draw(img)
+            iw, ih = img.size
+            pad = 5
+
+            # Erase all OCR text regions using sampled background color
+            for box in ocr_boxes:
+                x0 = _clamp(box.get("x0", 0) - pad, 0, iw - 1)
+                y0 = _clamp(box.get("y0", 0) - pad, 0, ih - 1)
+                x1 = _clamp(box.get("x1", 0) + pad, 0, iw - 1)
+                y1 = _clamp(box.get("y1", 0) + pad, 0, ih - 1)
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                # Sample background from just outside the box corner
+                bg = _sample_color(img, x1 + 8, y0 - 8)
+                draw.rectangle([x0, y0, x1, y1], fill=bg)
+
+            # Cluster boxes by vertical proximity → one cluster = one speech bubble
+            sorted_boxes = sorted(ocr_boxes, key=lambda b: b.get("cy", 0))
+            clusters: list[list[dict]] = []
+            if sorted_boxes:
+                cur = [sorted_boxes[0]]
+                for b in sorted_boxes[1:]:
+                    if b.get("cy", 0) - cur[-1].get("cy", 0) < 100:
+                        cur.append(b)
+                    else:
+                        clusters.append(cur)
+                        cur = [b]
+                clusters.append(cur)
+
+            for i, (speaker, text, _) in enumerate(translations):
+                if i >= len(clusters):
+                    break
+                c = clusters[i]
+                cx0 = _clamp(min(b.get("x0", 0) for b in c) - 4, 0, iw - 1)
+                cy0 = _clamp(min(b.get("y0", 0) for b in c) - 4, 0, ih - 1)
+                cx1 = _clamp(max(b.get("x1", 0) for b in c) + 4, 0, iw - 1)
+                cy1 = _clamp(max(b.get("y1", 0) for b in c) + 4, 0, ih - 1)
+                bw = max(cx1 - cx0, 60)
+                bh = max(cy1 - cy0, 20)
+
+                font, wrapped, fsize = _fit_text(draw, text, bw, bh)
+                bg = _sample_color(img, cx0 + 5, cy0 + 5)
+                text_color = (0, 0, 0) if sum(bg[:3]) / 3 > 128 else (255, 255, 255)
+                # Vertically center text in bubble
+                bb = draw.textbbox((0, 0), wrapped, font=font, spacing=2, language="vi")
+                text_h = bb[3] - bb[1]
+                y_start = cy0 + max(0, (bh - text_h) // 2)
+                draw.multiline_text(
+                    (cx0 + 4, y_start), wrapped,
+                    font=font, fill=text_color, spacing=2, language="vi",
+                )
+            return img
+
+        # Load OCR boxes once for this chapter
+        ocr_boxes_path = images_dir / "_ocr_boxes.json"
+        all_ocr_boxes: dict = {}
+        if ocr_boxes_path.exists():
+            all_ocr_boxes = _json.loads(ocr_boxes_path.read_text())
+
+        html_parts = [
+            "<div style='max-width:720px;margin:0 auto'>",
+            f"<p style='color:#888;font-size:13px;padding:8px 0'>{slug} — Chapter {chapter_num} &nbsp;{status}</p>",
+        ]
+
         for panel_idx in sorted(panels.keys()):
             dialogues = panels[panel_idx]
-            # Find matching image
             img_path = None
             for ext in (".jpg", ".jpeg", ".png", ".webp"):
                 candidate = images_dir / f"{panel_idx + 1:03d}{ext}"
@@ -349,27 +464,32 @@ def do_read(slug: str, chapter_num: str) -> str:
                     img_path = candidate
                     break
 
-            html_parts.append('<div style="margin-bottom:24px;border-bottom:1px solid #333;padding-bottom:16px">')
+            lines = []
+            for d in dialogues:
+                text = d.get("translated_text") or d.get("original_text", "")
+                if text:
+                    lines.append((d["speaker"], text, bool(d.get("translated_text"))))
 
-            if img_path:
-                import base64
-                data = base64.b64encode(img_path.read_bytes()).decode()
-                mime = "image/jpeg" if img_path.suffix in (".jpg", ".jpeg") else f"image/{img_path.suffix[1:]}"
-                html_parts.append(f'<img src="data:{mime};base64,{data}" style="max-width:100%;display:block;margin:0 auto"/>')
+            if not img_path:
+                continue
 
-            if dialogues:
-                html_parts.append('<div style="padding:8px 0">')
-                for d in dialogues:
-                    if d.get("translated_text"):
-                        speaker = d["speaker"]
-                        text = d["translated_text"]
-                        html_parts.append(
-                            f'<p style="margin:4px 0"><strong style="color:#4a9eff">[{speaker}]</strong> {text}</p>'
-                        )
-                html_parts.append('</div>')
+            img = _Image.open(img_path).convert("RGB")
+            ocr_boxes = all_ocr_boxes.get(str(panel_idx), [])
 
-            html_parts.append('</div>')
+            if ocr_boxes and lines:
+                img = _replace_bubble_text(img, ocr_boxes, lines)
 
+            # Downscale width to 720px for display
+            w, h = img.size
+            if w > 720:
+                img = img.resize((720, int(h * 720 / w)), _Image.LANCZOS)
+
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=80, optimize=True)
+            data = base64.b64encode(buf.getvalue()).decode()
+            html_parts.append(f'<img src="data:image/jpeg;base64,{data}" style="width:100%;display:block;margin:0"/>')
+
+        html_parts.append("</div>")
         return "\n".join(html_parts)
     except Exception as e:
         return f"Error: {e}"
