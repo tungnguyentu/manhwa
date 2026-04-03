@@ -319,6 +319,17 @@ def do_history(slug: str):
 
 # ── Reader ────────────────────────────────────────────────────────────────────
 
+# Speaker colour palette for dialogue cards
+_SPEAKER_COLORS = [
+    "#4A90D9", "#E85D75", "#27AE60", "#8E44AD",
+    "#E67E22", "#16A085", "#C0392B", "#2980B9",
+]
+
+def _speaker_color(speaker: str) -> str:
+    idx = abs(hash(speaker)) % len(_SPEAKER_COLORS)
+    return _SPEAKER_COLORS[idx]
+
+
 def do_read(slug: str, chapter_num: str) -> str:
     if not slug or slug == "(none)" or not chapter_num:
         return ""
@@ -341,153 +352,98 @@ def do_read(slug: str, chapter_num: str) -> str:
 
         images_dir = settings.data_dir / "images" / slug / f"{int(chapter_num):03d}"
 
-        status = f"({dialogue_count} dialogues, {translated_count} translated)"
         if dialogue_count == 0:
-            status += " — No text extracted yet. Run Force re-extract in the Translate tab first."
+            hint = "⚠️ No text extracted yet — run the Translate tab with Force re-extract."
         elif translated_count == 0:
-            status += " — Dialogues found but not translated yet. Run Translate."
+            hint = "⚠️ Dialogues found but not translated yet — run the Translate tab."
+        else:
+            hint = f"{translated_count}/{dialogue_count} dialogues translated"
 
-        import base64, json as _json, textwrap as _textwrap, unicodedata as _ud
-        from PIL import Image as _Image, ImageDraw as _ImageDraw, ImageFont as _ImageFont
+        import base64
+        from PIL import Image as _Image
         import io
 
-        # Be Vietnam Pro — best Vietnamese diacritic support
-        _FONT_DIR = settings.data_dir.parent / "fonts"
-        _FONT_REGULAR = str(_FONT_DIR / "BeVietnamPro-Regular.ttf")
-        _FONT_BOLD    = str(_FONT_DIR / "BeVietnamPro-Bold.ttf")
-        _FONT_FALLBACK = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
-
-        def _load_font(size: int, bold: bool = False) -> "_ImageFont.FreeTypeFont":
-            for path in ([_FONT_BOLD, _FONT_REGULAR] if bold else [_FONT_REGULAR, _FONT_FALLBACK]):
-                try:
-                    return _ImageFont.truetype(path, size)
-                except Exception:
-                    continue
-            return _ImageFont.load_default()
-
-        def _clamp(v, lo, hi):
-            return max(lo, min(hi, v))
-
-        def _sample_color(image, x, y):
-            try:
-                return image.getpixel((_clamp(int(x), 0, image.width - 1),
-                                       _clamp(int(y), 0, image.height - 1)))
-            except Exception:
-                return (255, 255, 255)
-
-        def _fit_text(draw, text: str, box_w: int, box_h: int) -> tuple:
-            """Return (font, wrapped_text, font_size) fitting inside box_w × box_h."""
-            text = _ud.normalize("NFC", text)
-            for size in range(min(40, box_h), 7, -2):
-                font = _load_font(size)
-                avg_cw = max(1, draw.textlength("abcdefghij", font=font) / 10)
-                chars = max(1, int(box_w / avg_cw))
-                wrapped = _textwrap.fill(text, chars)
-                bb = draw.textbbox((0, 0), wrapped, font=font, spacing=2, language="vi")
-                if (bb[2] - bb[0]) <= box_w and (bb[3] - bb[1]) <= box_h:
-                    return font, wrapped, size
-            font = _load_font(8)
-            return font, text, 8
-
-        def _replace_bubble_text(img, ocr_boxes, translations):
-            """Erase original text and draw Vietnamese translations in each bubble."""
-            draw = _ImageDraw.Draw(img)
-            iw, ih = img.size
-            pad = 5
-
-            # Erase all OCR text regions using sampled background color
-            for box in ocr_boxes:
-                x0 = _clamp(box.get("x0", 0) - pad, 0, iw - 1)
-                y0 = _clamp(box.get("y0", 0) - pad, 0, ih - 1)
-                x1 = _clamp(box.get("x1", 0) + pad, 0, iw - 1)
-                y1 = _clamp(box.get("y1", 0) + pad, 0, ih - 1)
-                if x1 <= x0 or y1 <= y0:
-                    continue
-                # Sample background from just outside the box corner
-                bg = _sample_color(img, x1 + 8, y0 - 8)
-                draw.rectangle([x0, y0, x1, y1], fill=bg)
-
-            # Cluster boxes by vertical proximity → one cluster = one speech bubble
-            sorted_boxes = sorted(ocr_boxes, key=lambda b: b.get("cy", 0))
-            clusters: list[list[dict]] = []
-            if sorted_boxes:
-                cur = [sorted_boxes[0]]
-                for b in sorted_boxes[1:]:
-                    if b.get("cy", 0) - cur[-1].get("cy", 0) < 100:
-                        cur.append(b)
-                    else:
-                        clusters.append(cur)
-                        cur = [b]
-                clusters.append(cur)
-
-            for i, (speaker, text, _) in enumerate(translations):
-                if i >= len(clusters):
-                    break
-                c = clusters[i]
-                cx0 = _clamp(min(b.get("x0", 0) for b in c) - 4, 0, iw - 1)
-                cy0 = _clamp(min(b.get("y0", 0) for b in c) - 4, 0, ih - 1)
-                cx1 = _clamp(max(b.get("x1", 0) for b in c) + 4, 0, iw - 1)
-                cy1 = _clamp(max(b.get("y1", 0) for b in c) + 4, 0, ih - 1)
-                bw = max(cx1 - cx0, 60)
-                bh = max(cy1 - cy0, 20)
-
-                font, wrapped, fsize = _fit_text(draw, text, bw, bh)
-                bg = _sample_color(img, cx0 + 5, cy0 + 5)
-                text_color = (0, 0, 0) if sum(bg[:3]) / 3 > 128 else (255, 255, 255)
-                # Vertically center text in bubble
-                bb = draw.textbbox((0, 0), wrapped, font=font, spacing=2, language="vi")
-                text_h = bb[3] - bb[1]
-                y_start = cy0 + max(0, (bh - text_h) // 2)
-                draw.multiline_text(
-                    (cx0 + 4, y_start), wrapped,
-                    font=font, fill=text_color, spacing=2, language="vi",
-                )
-            return img
-
-        # Load OCR boxes once for this chapter
-        ocr_boxes_path = images_dir / "_ocr_boxes.json"
-        all_ocr_boxes: dict = {}
-        if ocr_boxes_path.exists():
-            all_ocr_boxes = _json.loads(ocr_boxes_path.read_text())
+        # Collect all image files in sorted order — skip tiny thumbnails/logos
+        all_images = sorted(
+            [p for p in images_dir.glob("*.*")
+             if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+             and not p.name.startswith("_")
+             and p.stat().st_size > 5_000],
+            key=lambda p: p.name,
+        )
 
         html_parts = [
-            "<div style='max-width:720px;margin:0 auto'>",
-            f"<p style='color:#888;font-size:13px;padding:8px 0'>{slug} — Chapter {chapter_num} &nbsp;{status}</p>",
+            "<style>",
+            ".toon-reader { max-width: 760px; margin: 0 auto; font-family: 'Be Vietnam Pro', 'Segoe UI', sans-serif; background: #1a1a2e; padding: 0 0 40px; }",
+            ".toon-header { color: #888; font-size: 13px; padding: 10px 12px; border-bottom: 1px solid #333; }",
+            ".toon-panel { margin: 0; position: relative; }",
+            ".toon-panel img { width: 100%; display: block; }",
+            ".toon-dialogues { padding: 8px 12px; background: #12121f; border-bottom: 3px solid #0d0d1a; }",
+            ".toon-bubble { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; border-bottom: 1px solid #1e1e3a; }",
+            ".toon-bubble:last-child { border-bottom: none; }",
+            ".toon-speaker { font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; white-space: nowrap; padding-top: 2px; min-width: 72px; text-align: right; }",
+            ".toon-text { font-size: 15px; line-height: 1.55; color: #e8e8f0; flex: 1; }",
+            ".toon-text.narrator { font-style: italic; color: #aab; }",
+            ".toon-text.sfx { font-size: 17px; font-weight: 700; color: #f0c040; }",
+            ".toon-no-text { color: #444; font-size: 12px; padding: 4px 12px; font-style: italic; }",
+            "</style>",
+            "<div class='toon-reader'>",
+            f"<div class='toon-header'>{slug} — Chapter {chapter_num} &nbsp;&bull;&nbsp; {hint}</div>",
         ]
 
-        for panel_idx in sorted(panels.keys()):
-            dialogues = panels[panel_idx]
-            img_path = None
-            for ext in (".jpg", ".jpeg", ".png", ".webp"):
-                candidate = images_dir / f"{panel_idx + 1:03d}{ext}"
-                if candidate.exists():
-                    img_path = candidate
-                    break
-
-            lines = []
-            for d in dialogues:
-                text = d.get("translated_text") or d.get("original_text", "")
-                if text:
-                    lines.append((d["speaker"], text, bool(d.get("translated_text"))))
-
-            if not img_path:
+        for img_path in all_images:
+            # Map image filename to panel index (001.jpg → panel 0)
+            stem = img_path.stem  # e.g. "001"
+            try:
+                panel_idx = int(stem) - 1
+            except ValueError:
                 continue
 
+            # Load and encode image
             img = _Image.open(img_path).convert("RGB")
-            ocr_boxes = all_ocr_boxes.get(str(panel_idx), [])
-
-            if ocr_boxes and lines:
-                img = _replace_bubble_text(img, ocr_boxes, lines)
-
-            # Downscale width to 720px for display
             w, h = img.size
-            if w > 720:
-                img = img.resize((720, int(h * 720 / w)), _Image.LANCZOS)
-
+            if w > 760:
+                img = img.resize((760, int(h * 760 / w)), _Image.LANCZOS)
             buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=80, optimize=True)
+            img.save(buf, format="JPEG", quality=82, optimize=True)
             data = base64.b64encode(buf.getvalue()).decode()
-            html_parts.append(f'<img src="data:image/jpeg;base64,{data}" style="width:100%;display:block;margin:0"/>')
+
+            dialogues = panels.get(panel_idx, [])
+            valid_dialogues = [d for d in dialogues if d.get("translated_text") or d.get("original_text")]
+
+            import html as _html
+
+            # Build dialogue HTML
+            dialogue_html = ""
+            if valid_dialogues:
+                bubbles = []
+                for d in valid_dialogues:
+                    text = d.get("translated_text") or d.get("original_text", "")
+                    speaker = d.get("speaker", "?")
+                    color = _speaker_color(speaker)
+                    if speaker == "NARRATOR":
+                        txt_cls = "toon-text narrator"
+                    elif speaker == "SFX":
+                        txt_cls = "toon-text sfx"
+                    else:
+                        txt_cls = "toon-text"
+                    safe_text = _html.escape(text).replace("\n", "<br>")
+                    safe_speaker = _html.escape(speaker)
+                    bubbles.append(
+                        f"<div class='toon-bubble'>"
+                        f"<span class='toon-speaker' style='color:{color}'>{safe_speaker}</span>"
+                        f"<span class='{txt_cls}'>{safe_text}</span>"
+                        f"</div>"
+                    )
+                dialogue_html = "<div class='toon-dialogues'>" + "".join(bubbles) + "</div>"
+
+            # Dialogue ABOVE image so you read translation before scrolling artwork
+            html_parts.append(
+                f"<div class='toon-panel'>"
+                f"{dialogue_html}"
+                f'<img src="data:image/jpeg;base64,{data}"/>'
+                f"</div>"
+            )
 
         html_parts.append("</div>")
         return "\n".join(html_parts)
