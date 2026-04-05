@@ -1,0 +1,214 @@
+/* ── Status banner ─────────────────────────────────────────────────────────── */
+#toon-ext-banner {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 2147483640;
+  padding: 7px 16px;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+  pointer-events: none;
+  letter-spacing: 0.3px;
+}
+#toon-ext-banner.toon-ext-banner--info    { background: #1a2a45; color: #7ab4f5; }
+#toon-ext-banner.toon-ext-banner--success { background: #102a1a; color: #4dcc88; }
+#toon-ext-banner.toon-ext-banner--warn    { background: #2e2200; color: #f0b84a; }
+#toon-ext-banner.toon-ext-banner--error   { background: #2a0808; color: #f07070; }
+
+/* ── Sidebar ───────────────────────────────────────────────────────────────── */
+#toon-sidebar {
+  position: fixed;
+  top: 0; right: 0;
+  width: 380px;
+  height: 100vh;
+  background: #0c0c18;
+  border-left: 1px solid #1c1c38;
+  z-index: 2147483630;
+  display: flex;
+  flex-direction: column;
+  font-family: "Be Vietnam Pro", "Segoe UI", "Noto Sans", system-ui, sans-serif;
+  box-shadow: -6px 0 32px rgba(0,0,0,0.7);
+}
+
+/* Header */
+#toon-sidebar-header {
+  padding: 13px 16px;
+  background: #10101f;
+  border-bottom: 1px solid #1c1c38;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+#toon-sidebar-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: #5a6ad8;
+}
+#toon-sidebar-toggle,
+#toon-learn-btn {
+  background: none;
+  border: 1px solid #222240;
+  border-radius: 4px;
+  color: #444466;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 7px;
+  line-height: 1.4;
+  transition: color 0.15s, border-color 0.15s;
+}
+#toon-sidebar-toggle:hover,
+#toon-learn-btn:hover { color: #aaa; border-color: #555; }
+#toon-learn-btn { color: #5a8a5a; border-color: #2a4a2a; }
+#toon-learn-btn:hover { color: #7acc7a; border-color: #3a6a3a; }
+#toon-learn-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* Panel label bar */
+#toon-panel-bar {
+  padding: 8px 16px;
+  background: #0e0e20;
+  border-bottom: 1px solid #181830;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: #2e3060;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+#toon-panel-dots {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.toon-panel-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #1e1e38;
+  transition: background 0.2s;
+}
+.toon-panel-dot.active {
+  background: #5a6ad8;
+}
+
+/* Scrollable body */
+#toon-sidebar-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 16px 32px;
+  scrollbar-width: thin;
+  scrollbar-color: #1e1e38 transparent;
+}
+#toon-sidebar-body::-webkit-scrollbar { width: 4px; }
+#toon-sidebar-body::-webkit-scrollbar-track { background: transparent; }
+#toon-sidebar-body::-webkit-scrollbar-thumb { background: #1e1e38; border-radius: 4px; }
+
+#toon-sidebar-empty {
+  color: #252540;
+  font-size: 13px;
+  text-align: center;
+  margin-top: 60px;
+  line-height: 1.8;
+}
+
+/* ── Dialogue card ─────────────────────────────────────────────────────────── */
+.toon-dlg {
+  margin-bottom: 12px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #161628;
+  background: #0f0f20;
+}
+
+.toon-dlg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #161628;
+}
+
+.toon-dlg-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.toon-dlg-speaker {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  flex: 1;
+}
+
+.toon-dlg-body {
+  padding: 8px 10px 10px;
+}
+
+/* Vietnamese translation — primary */
+.toon-dlg-vi {
+  font-size: 15px;
+  line-height: 1.65;
+  color: #dde2f5;
+  margin-bottom: 5px;
+}
+
+/* Original text — secondary, dimmed */
+.toon-dlg-orig {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #2e2e50;
+  font-style: italic;
+  border-top: 1px solid #141428;
+  padding-top: 5px;
+  margin-top: 4px;
+}
+
+/* SFX style */
+.toon-dlg.sfx .toon-dlg-vi {
+  font-size: 18px;
+  font-weight: 700;
+  color: #f0c040;
+  letter-spacing: 0.5px;
+}
+
+/* NARRATOR style */
+.toon-dlg.narrator .toon-dlg-vi {
+  color: #8899bb;
+  font-style: italic;
+}
+
+/* ── Character colour palette ──────────────────────────────────────────────── */
+/* Applied via inline style on .toon-dlg-dot and .toon-dlg-speaker — see JS */
+
+/* ── Push page content left ────────────────────────────────────────────────── */
+body.toon-sidebar-open  { margin-right: 380px !important; transition: margin-right 0.2s; }
+body.toon-sidebar-closed{ margin-right: 0 !important;   transition: margin-right 0.2s; }
+
+/* ── Collapsed tab ─────────────────────────────────────────────────────────── */
+#toon-sidebar-tab {
+  position: fixed;
+  right: 0; top: 50%;
+  transform: translateY(-50%);
+  background: #10101f;
+  border: 1px solid #1c1c38;
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  color: #5a6ad8;
+  font-size: 10px;
+  font-weight: 700;
+  writing-mode: vertical-rl;
+  padding: 14px 8px;
+  cursor: pointer;
+  z-index: 2147483630;
+  letter-spacing: 1.5px;
+  display: none;
+  transition: background 0.15s;
+}
+#toon-sidebar-tab:hover { background: #16162e; }

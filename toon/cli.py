@@ -347,5 +347,22 @@ def characters(
     console.print(table)
 
 
+@app.command()
+def api(
+    port: int = typer.Option(7861, "--port", "-p", help="Port for the API server"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind"),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes"),
+) -> None:
+    """Start the REST API server for the Chrome extension."""
+    try:
+        import uvicorn
+    except ImportError:
+        console.print("[red]uvicorn not installed. Run: pip install uvicorn fastapi[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Starting Toon API on http://{host}:{port}[/green]")
+    uvicorn.run("toon.api:app", host=host, port=port, reload=reload)
+
+
 if __name__ == "__main__":
     app()

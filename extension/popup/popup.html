@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Toon Translator</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 280px;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #12121f;
+      color: #d0d0e8;
+      font-size: 13px;
+    }
+    header {
+      background: #1e1e40;
+      padding: 12px 14px;
+      font-weight: 700;
+      font-size: 14px;
+      letter-spacing: 0.3px;
+    }
+    header span { color: #7b8cde; }
+    .section { padding: 12px 14px; border-bottom: 1px solid #1e1e30; }
+    .section label { display: block; margin-bottom: 4px; color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .section input {
+      width: 100%;
+      background: #0f0f1a;
+      border: 1px solid #2a2a50;
+      border-radius: 4px;
+      color: #d0d0e8;
+      padding: 6px 8px;
+      font-size: 12px;
+      font-family: monospace;
+    }
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #444;
+      flex-shrink: 0;
+    }
+    .dot.ok   { background: #4caf50; }
+    .dot.err  { background: #f44336; }
+    .dot.checking { background: #ff9800; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    #status-text { color: #888; font-size: 12px; }
+    .hint {
+      padding: 8px 14px 12px;
+      font-size: 11px;
+      color: #555;
+      line-height: 1.4;
+    }
+    .hint kbd {
+      background: #1e1e40;
+      border: 1px solid #333;
+      border-radius: 3px;
+      padding: 1px 4px;
+      font-size: 10px;
+      color: #aaa;
+    }
+  </style>
+</head>
+<body>
+  <header>🎌 <span>Toon</span> Translator</header>
+
+  <div class="section">
+    <label>Backend URL</label>
+    <input type="text" id="api-base" placeholder="http://127.0.0.1:7861"/>
+  </div>
+
+  <div class="status-row">
+    <div class="dot checking" id="status-dot"></div>
+    <span id="status-text">Checking backend…</span>
+  </div>
+
+  <div class="hint">
+    On a chapter page, the extension auto-translates on load.<br/>
+    Toggle overlay: <kbd>Alt</kbd>+<kbd>T</kbd>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -87,6 +87,7 @@ class AIClient:
                     model=self._settings.text_model,
                     messages=full_messages,
                     max_tokens=max_tokens,
+                    timeout=60,  # seconds — prevent indefinite hangs
                 )
                 content = response.choices[0].message.content
                 if content:
@@ -96,8 +97,10 @@ class AIClient:
             except Exception as e:
                 msg = str(e)
                 if "1302" in msg or "429" in msg or "rate limit" in msg.lower():
-                    wait = 5 * (2 ** attempt)  # 5s, 10s, 20s, 40s, 80s
+                    wait = min(15 * (attempt + 1), 60)  # cap at 60s
                     time.sleep(wait)
+                elif "timeout" in msg.lower() or "timed out" in msg.lower():
+                    time.sleep(5)  # short wait then retry on timeout
                 else:
                     raise
         return ""

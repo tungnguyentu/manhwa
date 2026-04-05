@@ -16,6 +16,9 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2",
     "Pillow>=10",
+    "fastapi>=0.111",
+    "uvicorn>=0.29",
+    "pyobjc-framework-Vision>=10.3",
 ]
 
 [project.scripts]

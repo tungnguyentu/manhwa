@@ -79,11 +79,11 @@ def do_learn(urls_raw: str, force_reextract: bool = False, progress=gr.Progress(
 
     try:
         settings = _init()
-        from toon.scraper.downloader import scrape_chapter, url_to_slug
         from toon.ai_client import AIClient
         from toon.extractor.vision import extract_chapter
         from toon.profiler.builder import build_profiles
         from toon.learner.style_learner import learn_style_from_series
+        from toon.scraper.downloader import scrape_chapter, url_to_slug
 
         client = AIClient(settings)
         slug = url_to_slug(urls[0])
@@ -99,7 +99,7 @@ def do_learn(urls_raw: str, force_reextract: bool = False, progress=gr.Progress(
             ch_id = db_module.upsert_chapter(series_id, ch_n, url)
             ch_info = db_module.get_chapter(series_id, ch_n)
 
-            if ch_info and ch_info.get("scraped_at"):
+            if ch_info and ch_info.get("scraped_at") and not force_reextract:
                 yield out(f"  ⏭ Images already downloaded, skipping")
             else:
                 yield out(f"  ⏳ Downloading images…")
@@ -115,7 +115,7 @@ def do_learn(urls_raw: str, force_reextract: bool = False, progress=gr.Progress(
                     db_module.clear_extracted(ch_id)
                 yield out(f"  ⏳ Running OCR + speaker attribution…")
                 progress(i / total + 0.4 / total, desc=f"Ch {ch_n}: OCR…")
-                count = _run(extract_chapter(ch_id, slug, ch_n, client, settings, db_module, source_lang="vi"))
+                count = _run(extract_chapter(ch_id, slug, ch_n, client, settings, db_module, source_lang="vi", skip_attribution=True))
                 db_module.mark_chapter_extracted(ch_id)
                 yield out(f"  ✅ {count} dialogues extracted")
 
@@ -374,18 +374,20 @@ def do_read(slug: str, chapter_num: str) -> str:
 
         html_parts = [
             "<style>",
-            ".toon-reader { max-width: 760px; margin: 0 auto; font-family: 'Be Vietnam Pro', 'Segoe UI', sans-serif; background: #1a1a2e; padding: 0 0 40px; }",
+            ".toon-reader { max-width: 1100px; margin: 0 auto; font-family: 'Be Vietnam Pro', 'Segoe UI', sans-serif; background: #1a1a2e; padding: 0 0 40px; }",
             ".toon-header { color: #888; font-size: 13px; padding: 10px 12px; border-bottom: 1px solid #333; }",
-            ".toon-panel { margin: 0; position: relative; }",
-            ".toon-panel img { width: 100%; display: block; }",
-            ".toon-dialogues { padding: 8px 12px; background: #12121f; border-bottom: 3px solid #0d0d1a; }",
-            ".toon-bubble { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; border-bottom: 1px solid #1e1e3a; }",
+            ".toon-panel { display: flex; align-items: flex-start; margin: 0; border-bottom: 3px solid #0d0d1a; }",
+            ".toon-panel-img { flex: 0 0 65%; max-width: 65%; }",
+            ".toon-panel-img img { width: 100%; display: block; }",
+            ".toon-panel-img.full { flex: 0 0 100%; max-width: 100%; }",
+            # dialogue col: JS (via gr.Blocks js=) handles marginTop to keep visible while scrolling
+            ".toon-dialogues { flex: 1; padding: 14px 14px; background: #12121f; border-left: 2px solid #0d0d1a; align-self: flex-start; transition: margin-top 0.1s; }",
+            ".toon-bubble { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid #1e1e3a; }",
             ".toon-bubble:last-child { border-bottom: none; }",
-            ".toon-speaker { font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; white-space: nowrap; padding-top: 2px; min-width: 72px; text-align: right; }",
-            ".toon-text { font-size: 15px; line-height: 1.55; color: #e8e8f0; flex: 1; }",
+            ".toon-speaker { font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; white-space: nowrap; padding-top: 3px; min-width: 64px; text-align: right; }",
+            ".toon-text { font-size: 15px; line-height: 1.6; color: #e8e8f0; flex: 1; }",
             ".toon-text.narrator { font-style: italic; color: #aab; }",
             ".toon-text.sfx { font-size: 17px; font-weight: 700; color: #f0c040; }",
-            ".toon-no-text { color: #444; font-size: 12px; padding: 4px 12px; font-style: italic; }",
             "</style>",
             "<div class='toon-reader'>",
             f"<div class='toon-header'>{slug} — Chapter {chapter_num} &nbsp;&bull;&nbsp; {hint}</div>",
@@ -402,8 +404,8 @@ def do_read(slug: str, chapter_num: str) -> str:
             # Load and encode image
             img = _Image.open(img_path).convert("RGB")
             w, h = img.size
-            if w > 760:
-                img = img.resize((760, int(h * 760 / w)), _Image.LANCZOS)
+            if w > 720:
+                img = img.resize((720, int(h * 720 / w)), _Image.LANCZOS)
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=82, optimize=True)
             data = base64.b64encode(buf.getvalue()).decode()
@@ -414,7 +416,6 @@ def do_read(slug: str, chapter_num: str) -> str:
             import html as _html
 
             # Build dialogue HTML
-            dialogue_html = ""
             if valid_dialogues:
                 bubbles = []
                 for d in valid_dialogues:
@@ -435,15 +436,20 @@ def do_read(slug: str, chapter_num: str) -> str:
                         f"<span class='{txt_cls}'>{safe_text}</span>"
                         f"</div>"
                     )
-                dialogue_html = "<div class='toon-dialogues'>" + "".join(bubbles) + "</div>"
-
-            # Dialogue ABOVE image so you read translation before scrolling artwork
-            html_parts.append(
-                f"<div class='toon-panel'>"
-                f"{dialogue_html}"
-                f'<img src="data:image/jpeg;base64,{data}"/>'
-                f"</div>"
-            )
+                dialogue_col = "<div class='toon-dialogues'>" + "".join(bubbles) + "</div>"
+                html_parts.append(
+                    f"<div class='toon-panel'>"
+                    f"<div class='toon-panel-img'><img src='data:image/jpeg;base64,{data}'/></div>"
+                    f"{dialogue_col}"
+                    f"</div>"
+                )
+            else:
+                # No dialogue — image takes full width
+                html_parts.append(
+                    f"<div class='toon-panel'>"
+                    f"<div class='toon-panel-img full'><img src='data:image/jpeg;base64,{data}'/></div>"
+                    f"</div>"
+                )
 
         html_parts.append("</div>")
         return "\n".join(html_parts)
@@ -494,6 +500,29 @@ def do_delete_translations(slug: str, chapter_num: str) -> str:
 
 # ── build UI ──────────────────────────────────────────────────────────────────
 
+_READER_JS = """
+function() {
+  function updateSticky() {
+    document.querySelectorAll('.toon-panel').forEach(function(panel) {
+      var d = panel.querySelector('.toon-dialogues');
+      if (!d) return;
+      var pr = panel.getBoundingClientRect();
+      var dh = d.scrollHeight;
+      var ph = panel.offsetHeight;
+      if (pr.top < 0 && pr.bottom > dh) {
+        var offset = Math.min(-pr.top, ph - dh);
+        d.style.marginTop = Math.max(0, offset) + 'px';
+      } else {
+        d.style.marginTop = '0px';
+      }
+    });
+  }
+  document.addEventListener('scroll', updateSticky, {passive: true, capture: true});
+  new MutationObserver(updateSticky).observe(document.body, {childList: true, subtree: true});
+}
+"""
+
+
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="Toon Translator") as demo:
         gr.Markdown(
@@ -517,7 +546,7 @@ def build_ui() -> gr.Blocks:
                         "https://hentaivnx.com/…/chapter-2/…\n"
                         "https://hentaivnx.com/…/chapter-3/…"
                     ),
-                    lines=5,
+                    lines=4,
                 )
                 l_reextract = gr.Checkbox(label="Force re-extract (redo OCR even if already done)", value=False)
                 l_btn = gr.Button("📥 Learn from these chapters", variant="primary", size="lg")
@@ -634,7 +663,7 @@ def build_ui() -> gr.Blocks:
 
 def main():
     demo = build_ui()
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=False, theme=gr.themes.Soft())
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=False, theme=gr.themes.Soft(), js=_READER_JS)
 
 
 if __name__ == "__main__":

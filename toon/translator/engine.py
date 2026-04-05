@@ -30,6 +30,7 @@ async def translate_chapter(
     source_lang: str = "en",
     target_lang: str = "vi",
     series_id: int | None = None,
+    progress_cb=None,  # async callable(done: int, total: int) | None
 ) -> int:
     """Translate all dialogues in a chapter. Returns number of translated dialogues."""
     dialogues = db.get_dialogues_for_chapter(chapter_id)
@@ -82,10 +83,19 @@ async def translate_chapter(
 
     # Run all batches concurrently (limited by semaphore)
     sem = asyncio.Semaphore(TRANSLATE_CONCURRENCY)
+    done_count = 0
 
     async def _run_batch(b, ctx):
+        nonlocal done_count
         async with sem:
-            return await _translate_batch(b, ctx, system_prompt, source_lang_name, profile_version, target_lang, client, db)
+            result = await _translate_batch(b, ctx, system_prompt, source_lang_name, profile_version, target_lang, client, db)
+        done_count += len(b)
+        if progress_cb:
+            try:
+                await progress_cb(done_count, len(dialogues))
+            except Exception:
+                pass
+        return result
 
     results = await asyncio.gather(*[_run_batch(b, ctx) for b, ctx in batches])
     return sum(results)

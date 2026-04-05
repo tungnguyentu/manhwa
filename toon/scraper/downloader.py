@@ -18,15 +18,27 @@ HEADERS = {
     ),
 }
 
-# JS to extract panel image URLs from a loaded page
+# JS to extract panel image URLs from a loaded page (including lazy-loaded ones)
 _EXTRACT_IMAGES_JS = """
 () => {
-  const imgs = Array.from(document.querySelectorAll('img'));
-  return imgs
-    .map(img => img.src || img.dataset.src || img.dataset.lazySrc || '')
-    .filter(src => src && !src.startsWith('data:') &&
-      (src.includes('.jpg') || src.includes('.png') || src.includes('.webp')))
-    .filter((src, i, arr) => arr.indexOf(src) === i);
+  const LAZY_ATTRS = ['data-src','data-lazy','data-lazy-src','data-original','data-url','data-wpfc-original'];
+  const seen = new Set();
+  const result = [];
+  for (const img of document.querySelectorAll('img')) {
+    let src = '';
+    for (const attr of LAZY_ATTRS) {
+      src = img.getAttribute(attr) || '';
+      if (src) break;
+    }
+    if (!src) src = img.src || '';
+    if (!src || src.startsWith('data:') || seen.has(src)) continue;
+    const hasExt = /\\.(jpe?g|png|webp|gif)(\\?|$)/i.test(src);
+    const looksLikePanel = /\\/(chapter|panel|page|images?|uploads?|content|scan|\\d+\\/\\d+)/i.test(src);
+    if (!hasExt && !looksLikePanel) continue;
+    seen.add(src);
+    result.push(src);
+  }
+  return result;
 }
 """
 
@@ -63,56 +75,74 @@ def _filter_panel_images(urls: list[str], page_url: str) -> list[str]:
 
 async def _get_image_urls_via_playwright_mcp(url: str) -> list[str]:
     """
-    Get panel image URLs by launching a real browser via Playwright MCP.
-    This is called from the CLI/app — the actual MCP navigation happens via Claude's tools.
-    Returns image URLs extracted from the live page.
+    Get panel image URLs by launching a real browser via Playwright.
+    Visits the site homepage first to acquire Cloudflare/session cookies,
+    then navigates to the chapter page and extracts all panel image URLs.
     """
-    # This function is the bridge — in normal usage it's called from the CLI
-    # The MCP-based approach runs through Claude's browser session
-    # For programmatic use, fall back to Playwright directly
     from playwright.async_api import async_playwright
+    from urllib.parse import urlparse as _urlparse
+
+    parsed = _urlparse(url)
+    homepage = f"{parsed.scheme}://{parsed.netloc}"
+
     async with async_playwright() as p:
-        for browser_type in [p.firefox, p.chromium]:
-            try:
-                browser = await browser_type.launch(headless=True)
-                ctx = await browser.new_context(
-                    user_agent=HEADERS["User-Agent"],
-                    viewport={"width": 1280, "height": 900},
-                )
-                await ctx.add_init_script(
-                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-                )
-                page = await ctx.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                await page.wait_for_timeout(2000)
-                # Scroll down gradually to trigger lazy-loading of all panel images
-                await page.evaluate("""
-                    async () => {
-                        await new Promise(resolve => {
-                            let total = document.body.scrollHeight;
-                            let current = 0;
-                            const step = 800;
-                            const timer = setInterval(() => {
-                                window.scrollBy(0, step);
-                                current += step;
-                                if (current >= total) {
-                                    clearInterval(timer);
-                                    resolve();
-                                }
-                            }, 150);
-                        });
-                    }
-                """)
-                await page.wait_for_timeout(2000)
-                urls = await page.evaluate(_EXTRACT_IMAGES_JS)
-                await browser.close()
-                if urls:
-                    return urls
-            except Exception:
+        for headless in [False, True]:
+            for browser_type in [p.chromium, p.firefox]:
+                browser = None
                 try:
+                    browser = await browser_type.launch(
+                        headless=headless,
+                        args=["--no-sandbox", "--disable-blink-features=AutomationControlled"] if not headless else [],
+                    )
+                    ctx = await browser.new_context(
+                        user_agent=HEADERS["User-Agent"],
+                        viewport={"width": 1280, "height": 900},
+                        locale="vi-VN",
+                    )
+                    await ctx.add_init_script(
+                        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+                    )
+                    page = await ctx.new_page()
+
+                    # Visit homepage first to get session/Cloudflare cookies
+                    try:
+                        await page.goto(homepage, wait_until="domcontentloaded", timeout=20000)
+                        await page.wait_for_timeout(1500)
+                    except Exception:
+                        pass  # If homepage fails, try chapter directly anyway
+
+                    await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                    await page.wait_for_timeout(2000)
+
+                    # Scroll to trigger lazy-loading
+                    await page.evaluate("""
+                        async () => {
+                            await new Promise(resolve => {
+                                let current = 0;
+                                const step = 600;
+                                const timer = setInterval(() => {
+                                    window.scrollBy(0, step);
+                                    current += step;
+                                    if (current >= document.body.scrollHeight) {
+                                        clearInterval(timer);
+                                        resolve();
+                                    }
+                                }, 100);
+                            });
+                        }
+                    """)
+                    await page.wait_for_timeout(2000)
+
+                    urls = await page.evaluate(_EXTRACT_IMAGES_JS)
                     await browser.close()
+                    if urls:
+                        return urls
                 except Exception:
-                    pass
+                    if browser:
+                        try:
+                            await browser.close()
+                        except Exception:
+                            pass
     return []
 
 

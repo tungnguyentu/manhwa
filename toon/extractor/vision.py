@@ -16,82 +16,98 @@ from toon.models import Dialogue, PanelExtraction
 if TYPE_CHECKING:
     from toon.config import _Settings
     import toon.db as db_module
+else:
+    _Settings = Any
 
 
-WINDOW_SIZE = 3  # Number of consecutive panels processed together for context
+WINDOW_SIZE = 3       # Consecutive panels per attribution call
+OCR_CONCURRENCY = 8   # Parallel Apple Vision threads (Neural Engine handles this well)
 
 
-_OCR_READERS: dict[str, Any] = {}
-
-
-def _get_ocr_reader(langs: tuple[str, ...]) -> Any:
-    """Lazy-load EasyOCR reader for the given language tuple."""
-    import warnings
-    import easyocr
-    from pathlib import Path as _Path
-    # Ensure EasyOCR model directory exists (prevents temp.zip error on first download)
-    model_dir = _Path.home() / ".EasyOCR" / "model"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    key = ",".join(langs)
-    if key not in _OCR_READERS:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*pin_memory.*", category=UserWarning)
-            _OCR_READERS[key] = easyocr.Reader(list(langs), gpu=False, verbose=False)
-    return _OCR_READERS[key]
-
-
-def _ocr_image(image_path: Path, langs: tuple[str, ...] = ("en", "vi")) -> list[dict[str, Any]]:
-    """Run EasyOCR on a single image. Returns list of {text, confidence, bbox}.
-    Slices tall webtoon strips into chunks to avoid EasyOCR memory/accuracy issues.
+def _apple_ocr_file(file_path: str) -> list[dict[str, Any]]:
     """
-    import warnings
-    from PIL import Image
+    OCR a single image file using Apple Vision framework (Neural Engine).
+    Thread-safe when called with initWithURL (no Quartz CGImage).
+    Returns [{text, confidence, cy}] sorted top-to-bottom.
+    """
+    import Vision  # type: ignore
+    import Foundation  # type: ignore
 
-    img = Image.open(image_path).convert("RGB")
+    url = Foundation.NSURL.fileURLWithPath_(file_path)
+    results: list[dict[str, Any]] = []
+
+    def _handler(request, error):  # noqa: ANN001
+        for obs in (request.results() or []):
+            cands = obs.topCandidates_(1)
+            if cands:
+                results.append({
+                    "text": str(cands[0].string()),
+                    "confidence": float(cands[0].confidence()),
+                    # Vision y=0 is bottom; invert for top-down ordering
+                    "cy": 1.0 - float(obs.boundingBox().origin.y),
+                })
+
+    req = Vision.VNRecognizeTextRequest.alloc().initWithCompletionHandler_(_handler)
+    req.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
+    req.setUsesLanguageCorrection_(False)
+    req.setRecognitionLanguages_(["en-US", "ko-KR"])
+    handler = Vision.VNImageRequestHandler.alloc().initWithURL_options_(url, {})
+    handler.performRequests_error_([req], None)
+    return sorted(results, key=lambda r: r["cy"])
+
+
+def _ocr_image_apple(image_path: Path) -> list[dict[str, Any]]:
+    """
+    Slice a tall webtoon strip into 2000px chunks, OCR each with Apple Vision,
+    and return merged results with absolute y-coordinates.
+    """
+    from PIL import Image as _PIL
+
+    img = _PIL.open(image_path).convert("RGB")
     w, h = img.size
-
-    # Resize width if too wide
-    max_width = 1000
-    if w > max_width:
-        scale = max_width / w
-        img = img.resize((max_width, int(h * scale)), Image.LANCZOS)
-        w, h = img.size
-
-    reader = _get_ocr_reader(langs)
+    chunk_h, overlap = 2000, 100
     results_all: list[dict[str, Any]] = []
+    y, i = 0, 0
 
-    # Slice tall images into ~2000px chunks with 100px overlap
-    chunk_h = 2000
-    overlap = 100
-
-    y = 0
     while y < h:
         y_end = min(y + chunk_h, h)
         chunk = img.crop((0, y, w, y_end))
-        tmp = image_path.with_suffix(f".ocr_tmp_{y}.jpg")
+        tmp = str(image_path.parent / f".ocr_tmp_{image_path.stem}_{i}.jpg")
         chunk.save(tmp, "JPEG", quality=85)
         try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", message=".*pin_memory.*", category=UserWarning)
-                chunk_results = reader.readtext(str(tmp), detail=1)
-            for bbox, text, conf in chunk_results:
-                if conf >= 0.3 and text.strip():
-                    # Adjust bbox y-coordinates back to full image space
-                    adjusted_bbox = [[pt[0], pt[1] + y] for pt in bbox]
-                    xs = [pt[0] for pt in adjusted_bbox]
-                    ys = [pt[1] for pt in adjusted_bbox]
-                    cx, cy = sum(xs) / 4, sum(ys) / 4
-                    x0, y0 = int(min(xs)), int(min(ys))
-                    x1, y1 = int(max(xs)), int(max(ys))
-                    results_all.append({
-                        "text": text.strip(), "confidence": round(conf, 2),
-                        "cx": cx, "cy": cy,
-                        "x0": x0, "y0": y0, "x1": x1, "y1": y1,
-                    })
+            chunk_results = _apple_ocr_file(tmp)
+            ch = y_end - y
+            for r in chunk_results:
+                if r["confidence"] < 0.45 or len(r["text"].strip()) < 2:
+                    continue
+                # cy is normalised [0,1] within the chunk; map to absolute pixels
+                abs_cy = y + r["cy"] * ch
+                results_all.append({
+                    "text": r["text"].strip(),
+                    "confidence": round(r["confidence"], 2),
+                    "cx": float(w / 2),
+                    "cy": abs_cy,
+                    "x0": 0, "y0": int(abs_cy - 20),
+                    "x1": w, "y1": int(abs_cy + 20),
+                })
         finally:
-            tmp.unlink(missing_ok=True)
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except Exception:
+                pass
         y += chunk_h - overlap
-    return results_all
+        i += 1
+
+    return sorted(results_all, key=lambda r: r["cy"])
+
+
+async def _ocr_panel(
+    image_path: Path,
+    sem: asyncio.Semaphore,
+) -> list[dict[str, Any]]:
+    """Run Apple Vision OCR in a thread pool, up to OCR_CONCURRENCY in parallel."""
+    async with sem:
+        return await asyncio.to_thread(_ocr_image_apple, image_path)
 
 
 def _estimate_position(cx: float, cy: float, img_w: float = 1000, img_h: float = 1400) -> str:
@@ -189,15 +205,14 @@ async def extract_chapter(
     chapter_id: int,
     series_slug: str,
     chapter_num: int,
-    client: AIClient,
+    client: "AIClient",
     settings: "_Settings",
     db: "db_module",
     source_lang: str = "vi",
+    progress_cb: Any = None,  # async callable(stage: str, detail: str) | None
+    skip_attribution: bool = False,  # Skip GLM-5 speaker attribution (faster, use for Learn flow)
 ) -> int:
-    """Extract all panels for a chapter using EasyOCR + GLM-5. Returns total dialogue count."""
-    # Choose OCR languages — Korean can't be mixed with Vietnamese in EasyOCR
-    ocr_langs: tuple[str, ...] = ("en", "ko") if source_lang == "ko" else ("en", "vi")
-
+    """Extract all panels using parallel Apple Vision OCR + optional GLM-5 attribution. Returns total dialogue count."""
     images_dir = settings.data_dir / "images" / series_slug / f"{chapter_num:03d}"
     image_paths = sorted(
         [p for p in images_dir.glob("*.*") if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and p.stat().st_size > 10_000],
@@ -209,35 +224,69 @@ async def extract_chapter(
 
     db.delete_panels_for_chapter(chapter_id)
 
-    # Step 1: OCR images sequentially — EasyOCR already uses all CPU cores internally
-    ocr_sem = asyncio.Semaphore(1)
+    async def _notify(stage: str, detail: str = "") -> None:
+        if progress_cb:
+            try:
+                await progress_cb(stage, detail)
+            except Exception:
+                pass
+
+    # Step 1: OCR all panels in parallel via Apple Vision (Neural Engine)
+    await _notify("ocr_start", f"{len(image_paths)} panels")
+    ocr_sem = asyncio.Semaphore(OCR_CONCURRENCY)
+    completed = 0
 
     async def _ocr_one(path: Path) -> list[dict]:
-        async with ocr_sem:
-            return await asyncio.to_thread(_ocr_image, path, ocr_langs)
+        nonlocal completed
+        result = await _ocr_panel(path, ocr_sem)
+        completed += 1
+        await _notify("ocr_panel", f"{completed}/{len(image_paths)}")
+        return result
 
-    all_ocr: list[list[dict]] = await asyncio.gather(*[_ocr_one(p) for p in image_paths])
+    all_ocr: list[list[dict]] = await asyncio.gather(
+        *[_ocr_one(p) for p in image_paths]
+    )
 
-    # Step 2: Speaker attribution in sliding windows via GLM-5
-    semaphore = asyncio.Semaphore(settings.max_concurrent)
-    known_characters: list[str] = []
+    # Step 2: Speaker attribution — skip for Learn flow to save API calls
     all_extractions: list[PanelExtraction] = []
 
-    tasks = []
-    for i in range(0, len(image_paths), WINDOW_SIZE):
-        window_ocr = all_ocr[i:i + WINDOW_SIZE]
-        window_indices = list(range(i, i + len(window_ocr)))
-        tasks.append(_attribute_window(window_ocr, window_indices, list(known_characters), client, semaphore))
+    if skip_attribution:
+        # Save all OCR results as UNKNOWN speaker — fast, no API calls
+        for i, (path, ocr_texts) in enumerate(zip(image_paths, all_ocr)):
+            dialogues = [
+                Dialogue(speaker="UNKNOWN", text=t["text"], bubble_position="", confidence=t["confidence"])
+                for t in sorted(ocr_texts, key=lambda x: x["cy"])
+            ]
+            all_extractions.append(PanelExtraction(
+                panel_index=i,
+                image_file=str(path),
+                dialogues=dialogues,
+                scene_description="",
+            ))
+        await _notify("attribution_panel", f"{len(image_paths)}/{len(image_paths)}")
+    else:
+        await _notify("attribution_start", f"{len(image_paths)} panels")
+        semaphore = asyncio.Semaphore(settings.max_concurrent)
+        known_characters: list[str] = []
 
-    windows = await asyncio.gather(*tasks)
-    for win_i, window_results in enumerate(windows):
-        base = win_i * WINDOW_SIZE
-        for j, extraction in enumerate(window_results):
-            extraction.image_file = str(image_paths[base + j])
-            all_extractions.append(extraction)
-            for d in extraction.dialogues:
-                if d.speaker not in ("NARRATOR", "SFX", "UNKNOWN") and d.speaker not in known_characters:
-                    known_characters.append(d.speaker)
+        attr_done = 0
+        tasks = []
+        for i in range(0, len(image_paths), WINDOW_SIZE):
+            window_ocr = all_ocr[i:i + WINDOW_SIZE]
+            window_indices = list(range(i, i + len(window_ocr)))
+            tasks.append(_attribute_window(window_ocr, window_indices, list(known_characters), client, semaphore))
+
+        windows = await asyncio.gather(*tasks)
+        for win_i, window_results in enumerate(windows):
+            base = win_i * WINDOW_SIZE
+            for j, extraction in enumerate(window_results):
+                extraction.image_file = str(image_paths[base + j])
+                all_extractions.append(extraction)
+                for d in extraction.dialogues:
+                    if d.speaker not in ("NARRATOR", "SFX", "UNKNOWN") and d.speaker not in known_characters:
+                        known_characters.append(d.speaker)
+            attr_done += len(window_results)
+            await _notify("attribution_panel", f"{attr_done}/{len(image_paths)}")
 
     # Step 3: Save to DB
     all_extractions.sort(key=lambda e: e.panel_index)
